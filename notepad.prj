@@ -1,0 +1,20 @@
+; ATARI ST Notepad desk accessory source
+
+notepad.acc
+
+.C [ -Y -If:\usr\include\gemlib44 -If:\pure_c\include]
+.L [ -Y ]
+
+=                  ; list of modules follows...
+
+PCSTART.O          ; startup code
+notepad.c
+findlen.s
+fillstr.s
+
+
+PCFLTLIB.LIB       ; floating point library
+PCSTDLIB.LIB       ; standard library
+PCEXTLIB.LIB       ; extended library
+PCTOSLIB.LIB       ; TOS library
+PCGEMLIB.LIB       ; AES and VDI library
