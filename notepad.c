@@ -19,42 +19,24 @@
 
 #define HIDE_MOUSE graf_mouse(M_OFF,0x0L)
 #define SHOW_MOUSE graf_mouse(M_ON,0x0L)
-#define TRUE 1
-#define FALSE 0
 
-/* storage is composed of 2K blocks */
 
-#define BLOCK_SIZE 2048
-
-/* the control structure for managing this memory */
-
-struct mem_control {
-	unsigned int size;
-	struct mem_control *next;
-	struct mem_control *prev;
-	char mem[BLOCK_SIZE];
-};
+#include "storage.h"
 
 /* structure for screen wordwrap manipulations */
 struct blitpoint { int row, col, len; };
 
 /* sleazy workaround */
 //extern long find_clik(), find_row(), find_prev(), prev_para(),
-//	srch_back(), srch_for(), doc_len();
+//	storage_search_backwards(), storage_search_forwards(), doc_len();
 extern int find_len();
 
-/* global memory pointers */
-
-struct mem_control *first_block; /* pointer to first mem_control block */
-struct mem_control *last_block;  /* pointer
-
 /* screen display info */
-
 long first_par;     /* text offset of start of screen */
-int  first_line;    /* line number in first_par at top of window */
+long first_line;    /* line number in first_par at top of window */
 
-int ch_xsize, ch_ysize; /* size of character cell in pixels */
-int ch_cols, ch_rows;   /* number of characters in window */
+short ch_xsize, ch_ysize; /* size of character cell in pixels */
+short ch_cols, ch_rows;   /* number of characters in window */
 
 /* cursor stuff */
 
@@ -199,17 +181,8 @@ long find_row(int row);   /* convert scrn row into document index */
 void find_index(long index, int *row, long *start_index);  /* find scrn line containing index */
 long find_prev(int row);      /* find the index of the start of row-1 */
 int  cnt_lines(long index);    /* count number of scrn lines in para at index */
-void init_store(void);
-struct mem_control *add_block(struct mem_control *block); /* add memory to doc after block */
-void rem_block(struct mem_control *block);   /* free a memory block */
 long doc_len(void);        /* find length of the document */
-int ins_string(long index, long length, char string[]);  /* insert text at some point */
-void del_string(long index, long length);       /* remove text at some point */
-void dup_string(long dest, long source, long length);  /* copy text at source to dest */
-void compact(void);   /* crunch document storage */
-long srch_back(char chr, long start);  /* reverse search for char */
-long srch_for(char chr, long start);  /* forward search for char */
-void close_store(void);  /* release all storage space */
+
 void init_gem(void);
 void open_wind(void);
 void close_wind(void);
@@ -221,8 +194,11 @@ void interact(void);
 /*...........................MAIN CODE..................................*/
 
 void main(void) {
+	/* reset region select registers */
+	sel_start = sel_end = 0;
+	
 	init_gem();    /* open the window and all that */
-	init_store();  /* make a blank document */
+	storage_init();  /* make a blank document */
 	interact();
 }  /* end main */
 
@@ -253,7 +229,7 @@ void interact(void) {  /* handle all user actions */
 					form_alert(1,"[3][No windows available][OK]");
 			}  /* end if */
 		}  /* end while */
-			
+
 		while (opened) {  /* accessory open loop */
 			event = evnt_multi(MU_MESAG | MU_KEYBD | MU_BUTTON,
 							   1,1,1,
@@ -288,7 +264,7 @@ void interact(void) {  /* handle all user actions */
 					wind_klik(clik_x, clik_y);
 					wind_update(FALSE);
 				}  /* end if */
-			
+
 			/* GEM events */
 			if (event & MU_MESAG) {
 				switch (msg_buffer[0]) {
@@ -314,7 +290,7 @@ void interact(void) {  /* handle all user actions */
 							ar_down();
 							break;
 						}  /* end switch */
-						compact();
+						storage_compact();
 					}  /* end if */
 					break;
 				case WM_VSLID:
@@ -380,7 +356,7 @@ void interact(void) {  /* handle all user actions */
 						case 8:   /* clear */
 							clear();
 						}  /* end switch */
-						compact();
+						storage_compact();
 					}  /* end if */
 					break;
 				case AC_CLOSE:
@@ -393,7 +369,7 @@ void interact(void) {  /* handle all user actions */
 					;
 				}  /* end switch */
 			}  /* end if */
-			
+continue;			
 			if (opened)	{
 				/* update slider */
 				oldslide = slidpos;
@@ -429,12 +405,12 @@ void key_cmd(int cmd_key)
 	switch (cmd_key >> 8) {
 	case 0x48:  /* cursor up */
 		cur_up();
-		compact();     /* crunch storage */
+		storage_compact();     /* crunch storage */
 		break;
 		
 	case 0x50:  /* cursor down */
 		cur_down();
-		compact();     /* crunch storage */
+		storage_compact();     /* crunch storage */
 		break;
 		
 	case 0x4b:  /* cursor left */
@@ -593,7 +569,7 @@ void type_char(char charcode)  /* handle normal typing */
 {
 	struct blitpoint curpos;
 
-	if (ins_string(cur_index, 1L, &charcode) == 0)
+	if (storage_insert_string(cur_index, 1L, &charcode) == 0)
 		return;        /* insert in doc */
 
 	/* fix screen */
@@ -640,7 +616,7 @@ void backspace(void)  /* backward delete 1 character */
 		del_col = find_len(find_prev(cur_row)) - 1;
 	}  /* end else */
 	
-	del_string(--cur_index, 1L);
+	storage_delete_string(--cur_index, 1L);
 	scrn_del(del_row, del_col, cur_index,
 			 cur_row, cur_col, cur_len, 1L, &curpos);
 
@@ -771,7 +747,7 @@ void wind_klik(int x, int y)     /* left button is pressed over x,y in window */
 		
 		HIDE_MOUSE;
 		rfsh_char(old_col, old_row);
-		draw_cur(cur_col, cur_row);
+		draw_curs(cur_col, cur_row);
 		SHOW_MOUSE;
 	}  /* end if */
 }  /* end wind_klik */
@@ -921,16 +897,16 @@ void pg_down(void)                /* move to next page */
 		cnt = ch_rows + first_line - 1;
 		while (cnt >= (par_cnt=cnt_lines(first_par))) {
 			cnt -= par_cnt;
-			first_par = srch_for('\r', first_par) + 1;
+			first_par = storage_search_forwards('\r', first_par) + 1;
 		}  /* end while */
 		first_line = cnt;
 	}  /* end if */
 	else {
-		first_par = srch_back('\r',doc_len()-1) + 1;
+		first_par = storage_search_backwards('\r',doc_len()-1) + 1;
 		first_line = cnt_lines(first_par) - 1;
 		while (find_row(ch_rows-1) == -1 && (first_par != 0 || first_line != 0)) {
 			if (first_line == 0) {
-				first_par = srch_back('\r', first_par - 2) + 1;
+				first_par = storage_search_backwards('\r', first_par - 2) + 1;
 				first_line = cnt_lines(first_par);
 			}  /* end if */
 			--first_line;
@@ -950,7 +926,7 @@ void pg_up(void)                  /* move to previous page */
 	/* back up ch_rows-1 lines */
 	line_cnt = ch_rows - first_line - 1;
 	while (line_cnt > 0 && first_par != 0) {
-		first_par = srch_back('\r', first_par - 2) + 1;
+		first_par = storage_search_backwards('\r', first_par - 2) + 1;
 		line_cnt -= cnt_lines(first_par);
 	}  /* end while */
 
@@ -968,7 +944,7 @@ void set_slide(int pos)           /* adjust screen origin for new slider pos */
 	index = pos == 1000
 		? doc_len()
 		: pos*(doc_len()+find_clik(0,0)-find_clik(ch_cols-1,ch_rows-1))/1000;
-	first_par = srch_back('\r', index - 1) + 1;
+	first_par = storage_search_backwards('\r', index - 1) + 1;
 	line = first_par;
 	first_line = 0;
 	while ((line+=find_len(line)) < index)
@@ -977,7 +953,7 @@ void set_slide(int pos)           /* adjust screen origin for new slider pos */
 	/* keep the screen filled */
 	while (find_row(ch_rows-1) == -1 && (first_par!=0 || first_line!=0)) {
 		if (first_line == 0) {
-			first_par = srch_back('\r', first_par-2) + 1;
+			first_par = storage_search_backwards('\r', first_par-2) + 1;
 			first_line = cnt_lines(first_par);
 		}  /* end if */
 		--first_line;
@@ -996,10 +972,11 @@ void set_size(int width, int height)  /* respond to window resizing */
 	start = find_row(0);
 
 	/* round off and enforce minimum size */
-	ch_cols = (width - xdiff)/ch_xsize;
+	ch_cols = (width - xdiff) / ch_xsize;
 	if (ch_cols < 2)
 		ch_cols = 2;
-	ch_rows = (height - ydiff)/ch_ysize;
+
+	ch_rows = (height - ydiff) / ch_ysize;
 	if (ch_rows < 2)
 		ch_rows = 2;
 
@@ -1022,7 +999,7 @@ void set_size(int width, int height)  /* respond to window resizing */
 		cnt = ch_rows - row - 1;
 		line_cnt = first_line;
 		while (line_cnt < cnt && first_par != 0) {
-			first_par = srch_back('\r', first_par - 2) + 1;
+			first_par = storage_search_backwards('\r', first_par - 2) + 1;
 			line_cnt += cnt_lines(first_par);
 		}  /* end while */
 		
@@ -1097,7 +1074,7 @@ void copy_sel(void)     /* copy selected region to cursor pos */
 {
 	if (sel_start == sel_end)
 		return;
-	dup_string(cur_index, sel_start, (long)(sel_end - sel_start));
+	storage_duplicate_string(cur_index, sel_start, (long)(sel_end - sel_start));
 	set_screen(cur_row);
 	rfsh_all();
 }  /* end copy_sel */
@@ -1112,10 +1089,10 @@ void move_sel(void)     /* move selected region to cursor pos */
 	if (cur_index >= sel_start && cur_index <= sel_end)
 		return;
 
-	dup_string(cur_index, sel_start, sel_len);
+	storage_duplicate_string(cur_index, sel_start, sel_len);
 	if (cur_index >= sel_start)
 		cur_index -= sel_len;
-	del_string(sel_start, sel_len);
+	storage_delete_string(sel_start, sel_len);
 	sel_start = cur_index;
 	sel_end = cur_index + sel_len;
 	set_screen(cur_row);
@@ -1135,7 +1112,7 @@ void del_sel(void)      /* delete selected region */
 	else if (cur_index >= sel_start)
 		cur_index = sel_start;
 
-	del_string(sel_start, (long)(sel_end - sel_start));
+	storage_delete_string(sel_start, (long)(sel_end - sel_start));
 
 	set_screen(cur_row);
 	rfsh_all();
@@ -1151,15 +1128,19 @@ void find(void)
 	do_find();
 
 	/* which action? */
-	c=4;
+	c = 4;
 	while (findform[c].ob_state != OS_SELECTED)
 		++c;
 	findform[c].ob_state = OS_NORMAL;
 
 	from = fstr1;
-	for (fromlen = 0; from[fromlen]; ++fromlen);
+	for (fromlen = 0; from[fromlen]; ++fromlen)
+		;
+	
 	to = fstr4;
-	for (tolen = 0; to[tolen]; ++tolen);
+	for (tolen = 0; to[tolen]; ++tolen)
+		;
+	
 	index = cur_index;
 	if (fromlen == 0)
 		return;
@@ -1173,7 +1154,7 @@ void find(void)
 
 	switch (c) {
 	case 4:        /* change all */
-		while ((index = srch_for(from[0], index)) != -1) {
+		while ((index = storage_search_forwards(from[0], index)) != -1) {
 			if (match(index+1, from+1, fromlen-1)) {
 				replace(index, fromlen, tolen, to);
 				index += tolen;
@@ -1183,7 +1164,7 @@ void find(void)
 		}  /* end while */
 		break;
 	case 5:        /* change first */
-		while ((index = srch_for(from[0], index)) != -1 &&
+		while ((index = storage_search_forwards(from[0], index)) != -1 &&
 			   !match(index+1, from+1, fromlen-1))
 			++index;
 
@@ -1191,7 +1172,7 @@ void find(void)
 			replace(index, fromlen, tolen, to);
 		break;
 	case 6:        /* find */
-		while ((index = srch_for(from[0], index)) != -1 &&
+		while ((index = storage_search_forwards(from[0], index)) != -1 &&
 			   !match(index+1, from+1, fromlen-1))
 			++index;
 
@@ -1209,27 +1190,32 @@ void find(void)
 
 int match(long index, char *string, int len)     /* compare string with part of doc */
 #if 0
-	long index;    /* where in doc? */
+long index;    /* where in doc? */
 char *string;  /* with what */
 int  len;      /* how many chars? */
 #endif
 {
-	register int c;
+	int c;
 	char buffer[80];
 
 	if (len == 0)
-		return(TRUE);
+		return TRUE;
+	
 	fill_string(index, (long) len, buffer);
+	
 	if (buffer[0] == '\0')
-		return(FALSE);
-	for(c=0; c<len && string[c] == buffer[c]; ++c);
-	return(c == len);
+		return FALSE;
+	
+	for(c = 0; c < len && string[c] == buffer[c]; ++c)
+		;
+	
+	return (c == len);
 }  /* end match */
 
 
 void replace(long index, int oldlen, int newlen, char *newtext)
 #if 0
-	long index;
+long index;
 int  oldlen;
 int  newlen;
 char *newtext;
@@ -1251,7 +1237,7 @@ char *newtext;
 	else {
 		set_screen(1);
 		refresh(workx, worky, workw, workh);
-		draw_cur(cur_col, cur_row);
+		draw_curs(cur_col, cur_row);
 	}  /* end else */
 	
 	find_index(index+oldlen, &end_row, &end_line);
@@ -1265,7 +1251,7 @@ char *newtext;
 		end_len = 1;
 	}  /* end else */
 
-	del_string(index, (long) oldlen);
+	storage_delete_string(index, (long) oldlen);
 	scrn_del(cur_row, cur_col, cur_index,
 			 end_row, end_col, end_len, (long) oldlen, &newcur);
 
@@ -1280,7 +1266,7 @@ char *newtext;
 	}  /* end if */
 	
 	if (newlen) {
-		ins_string(index, (long) newlen, newtext);
+		storage_insert_string(index, (long) newlen, newtext);
 		scrn_ins(cur_row, cur_col, cur_index, cur_len,
 				 (long) newlen, &newcur);
 
@@ -1315,8 +1301,7 @@ void load(void)
 
 	/* append or replace? */
 	if (doc_len() > 1) {
-		rflag = form_alert(1,
-						   "[2][Append new file or|replace existing text.][APPEND|REPLACE|CANCEL]");
+		rflag = form_alert(1, "[2][Append new file or|replace existing text.][APPEND|REPLACE|CANCEL]");
 		if (rflag == 3)
 			return;
 	}  /* end if */
@@ -1326,6 +1311,7 @@ void load(void)
 	get_file(fname);
 	if (fname[0] == '\0')
 		return;
+		
 	fhandle = Fopen(fname, 0);    /* open for reading */
 	if (fhandle < 0) {
 		form_alert(1,"[3][File could not be opened.][OK]");
@@ -1334,15 +1320,15 @@ void load(void)
 
 	/* replace mode? */
 	if (rflag == 2) {
-		close_store();
-		init_store();
+		storage_deinit();
+		storage_init();
 	}  /* end if */
 	
 	/* fill it */
 	ins_point = doc_len();
 	do {
 		size = Fread(fhandle, (long)BLOCK_SIZE, transfer);
-		result = ins_string(ins_point, size, transfer);
+		result = storage_insert_string(ins_point, size, transfer);
 		ins_point += size; 
 	} while (size == BLOCK_SIZE && result != 0);
 
@@ -1438,8 +1424,8 @@ void clear(void)                  /* erase all text */
 	if (2 == form_alert(2,"[1][CLEAR will discard all text.][CLEAR |CANCEL]"))
 		return;
 
-	close_store();
-	init_store();
+	storage_deinit();
+	storage_init();
 	rfsh_all();
 }  /* end clear */
 
@@ -1452,7 +1438,7 @@ void set_screen(int row)          /* adjust display so cursor's near this row */
 		return;
 
 	/* put cursor on row 0 */
-	cur_line = first_par = srch_back('\r', cur_index - 1) + 1;
+	cur_line = first_par = storage_search_backwards('\r', cur_index - 1) + 1;
 	while (cur_line + (cur_len=find_len(cur_line)) <= cur_index) {
 		++first_line;
 		cur_line += cur_len;
@@ -1461,7 +1447,7 @@ void set_screen(int row)          /* adjust display so cursor's near this row */
 	/* scroll down the right number of rows */
 	cnt = row - first_line;
 	while (cnt > 0 && first_par != 0) {
-		first_par = srch_back('\r', first_par - 2) + 1;
+		first_par = storage_search_backwards('\r', first_par - 2) + 1;
 		cnt -= cnt_lines(first_par);
 	}  /* end while */
 
@@ -1470,7 +1456,7 @@ void set_screen(int row)          /* adjust display so cursor's near this row */
 	/* go further if screen can be filled more */
 	while (find_row(ch_rows-1) == -1 && (first_line!=0 || first_par!=0)) {
 		if (first_line == 0) {
-			first_par = srch_back('\r', first_par-2) + 1;
+			first_par = storage_search_backwards('\r', first_par-2) + 1;
 			first_line = cnt_lines(first_par);
 		}  /* end if */
 		--first_line;
@@ -1685,7 +1671,7 @@ struct blitpoint *new_pos;
 		blit(old_row, 0, old_row-1, prev_len, old_col);
 
 	if (start_row < 0 &&   /* inserting a CR? */
-		(rtn = srch_back('\r', ins_index+ins_len)) > first_par)
+		(rtn = storage_search_backwards('\r', ins_index+ins_len)) > first_par)
 		/* is the CR above the screen? */
 		if (rtn < prev_row + find_len(prev_row)) {
 			first_par = rtn + 1;
@@ -1839,7 +1825,7 @@ struct blitpoint *new_pos;
 		
 		/* find a new screen origin */
 		if (del_index < first_par)
-			first_par = srch_back('\r', del_index - 1) + 1;
+			first_par = storage_search_backwards('\r', del_index - 1) + 1;
 		
 		/* put del_index on first screen row */
 		first_line = 0;
@@ -2035,7 +2021,7 @@ void scrn_up(void)  /* scroll the screen upward */
 	if (++first_line == cnt_lines(first_par)) {
 		/* adjust scrn start */		
 		first_line = 0;
-		first_par = srch_for('\r', first_par) + 1;
+		first_par = storage_search_forwards('\r', first_par) + 1;
 	}  /* end if */
 	
 	array[0] = array[4] = workx;       /* blit source */
@@ -2057,7 +2043,7 @@ void scrn_down(void)  /* scroll the screen downward */
 
 	if (--first_line < 0) {
 		/* adjust start of screen */	
-		first_par = srch_back('\r', first_par - 2) + 1;
+		first_par = storage_search_backwards('\r', first_par - 2) + 1;
 		first_line = cnt_lines(first_par) - 1;
 	}  /* end if */
 	
@@ -2150,7 +2136,7 @@ long find_prev(int row)      /* find the index of the start of row-1 */
 		if (first_par || first_line) {
 			if (first_line == 0) {
 				/* last line of prev paragraph */
-				for(prev_row = srch_back('\r', first_par - 2) + 1;
+				for(prev_row = storage_search_backwards('\r', first_par - 2) + 1;
 					prev_row+(new_len=find_len(prev_row))!=first_par;
 					prev_row += new_len);
 			}  /* end if */
@@ -2174,7 +2160,7 @@ int  cnt_lines(long index)    /* count number of scrn lines in para at index */
 	register  long para_end, line;
 	register  int  c;
 
-	if ((para_end = srch_for('\r', index)) == -1)
+	if ((para_end = storage_search_forwards('\r', index)) == -1)
 		return(-1);
 	line = index;
 	for (c=1; (line += find_len(line)) <= para_end; c++)
@@ -2186,484 +2172,16 @@ int  cnt_lines(long index)    /* count number of scrn lines in para at index */
 
 /*....................STORAGE MANAGEMENT STUFF..........................*/
 
-void init_store(void)
-{
-	/* create storage for one block */
-	first_block = last_block = (struct mem_control*)Malloc(sizeof(struct mem_control));
-	first_block->next = first_block->prev = (struct mem_control*)-1;
-	first_block->size = 1;
-	first_block->mem[0] = '\r';
-
-	/* initialize display parameters */
-	cur_index = cur_line = first_par = 0;
-	cur_col = cur_row = first_line = 0;
-	cur_len = 1;
-
-	/* reset region select registers */
-	sel_start = sel_end = 0;
-
-}  /* end init_store */
-
-
-struct mem_control *add_block(struct mem_control *block) /* add memory to doc after block */
-{
-	register struct mem_control *nblock,*oblock;
-
-	oblock = block;
-
-	/* allocate memory for the block */
-	if ((nblock=(struct mem_control*)Malloc(sizeof(struct mem_control))) == 0) {
-		form_alert(1,"[3][Out of memory.][OK]");
-		return((struct mem_control*)-1);
-	}  /* end if */
-
-	/* chain new block into list */
-	nblock->next = oblock->next;
-	nblock->prev = oblock;
-	if (last_block == oblock)
-		last_block = nblock;
-	else
-		oblock->next->prev = nblock;
-	oblock->next = nblock;
-
-	/* block is initially empty */
-	nblock->size = 0;
-
-	return(nblock);
-
-}  /* end add_block */
-
-
-void rem_block(struct mem_control *block)   /* free a memory block */
-{
-	register  struct mem_control *oblock;
-
-	oblock = block;
-
-	/* unhook the block */
-	if (first_block == oblock)
-		first_block = oblock->next;
-	else
-		oblock->prev->next = oblock->next;
-
-	if (last_block == oblock)
-		last_block = oblock->prev;
-	else
-		oblock->next->prev = oblock->prev;
-
-	/* throw it away */
-	Mfree(oblock);
-
-}  /* end rem_block */
-
-
 long doc_len(void)        /* find length of the document */
 {
-	register long count, nextcount;
-	register struct mem_control *block;
-
-	/* find the last block */
-	block=first_block;
-	count = 0;
-	nextcount = block->size;
-	while (block != last_block) {
-		block=block->next;
-		count=nextcount;
-		nextcount+=block->size;
-	}  /* end while */
-
-	return(nextcount - 1);       /* don't count last CR */
+	return storage_get_length()- 1;       /* don't count last CR */
 
 }  /* end doc_len */
 
 
-int ins_string(long index, long length, char string[])  /* insert text at some point */
-{
-	register  char *source, *dest;
-	register  struct mem_control *block;
-	register  long count, nextcount;
-	struct    mem_control *dblock;
-	long newsize;
-
-	/* find the block containing index */
-	block = first_block;
-	count = 0;
-	nextcount = block->size;
-	while (nextcount < index) {
-		if ((block=block->next) == (struct mem_control*)-1)
-			return;
-		count = nextcount;
-		nextcount += block->size;
-	}  /* end while */
-
-	dblock = block;          /* assume current block is big enough */
-	newsize = block->size + length;  /* size of dest block */
-
-	if (newsize > BLOCK_SIZE) {
-		/* block spillover */
-		
-		if (index + length <= count + BLOCK_SIZE) {
-			/* inserted text fits in original block */
-			if ((dblock = add_block(dblock)) == (struct mem_control*)-1)
-				return(0);
-			newsize = nextcount - index;
-			block->size += length - newsize;
-		}  /* end if */
-		else {
-			/* insertion wraps past end of block */
-			while (newsize > BLOCK_SIZE) {
-				if ((dblock = add_block(dblock)) == (struct mem_control*)-1)
-					return(0);
-				newsize -= BLOCK_SIZE;
-			}  /* end while */
-		}  /* end else */
-	}  /* end if */
-
-	/* copy original text forward to make room for insert */
-	source = block->mem + nextcount - count;
-	dest = dblock->mem + newsize;
-	for (count = nextcount-index; count-- > 0; *(--dest) = *(--source))
-		;
-
-	/* copy in string */
-	for (count = 0; count < length; *(source++) = string[count++]) {
-		if (source == block->mem + BLOCK_SIZE) {
-			block->size = BLOCK_SIZE;
-			block = block->next;
-			source = block->mem;
-		} /* end if */
-	} /* end for */
-
-	dblock->size = newsize;
-
-	/* adjust region selection variables */
-	if (sel_start != sel_end && index < sel_end) {
-		sel_end += length;
-		if (index < sel_start)
-			sel_start += length;
-	}  /* end if */
-
-	return(1);
-}  /* end ins_string */
 
 
-void del_string(long index, long length)       /* remove text at some point */
-{
-	register  char *source, *dest;
-	register  struct mem_control *block;
-	register  long count, nextcount;
-	long start;
-	struct  mem_control *nextblock;
 
-	/* find the block containing index */
-	block = first_block;
-	count = 0;
-	nextcount = block->size;
-	while (nextcount <= index) {
-		if ((block = block->next) == (struct mem_control*)-1)
-			return;
-			count = nextcount;
-			nextcount += block->size;
-	}  /* end while */
-
-	start = index - count;                /* offset of copy target */
-	while (nextcount <= index + length) {
-		/* delete past end of block */
-		nextblock = block->next;
-
-		if (start == 0)   
-			rem_block(block);           /* dump whole blocks */
-		else {
-			block->size = start;        /* truncate partial block */
-			start = 0;
-		} /* end else */
-		
-		if ((block = nextblock) == (struct mem_control*)-1)
-			return;
-		count = nextcount;
-		nextcount += block->size;
-	}  /* end while */
-
-	/* adjust last (or only) block */
-	dest = block->mem + start;
-	source = block->mem + index + length - count;
-	if (dest != source) {
-		block->size -= source - dest;
-		/* register variable 'count' changes meaning here */
-		for (count = nextcount - index - length;
-			 count-- > 0;
-			 *(dest++) = *(source++));
-	} /* end if */
-	
-	/* adjust region selection variables */
-	if (sel_start != sel_end && index < sel_end) {
-		if (index <= sel_start) {
-			if (index+length <= sel_start) {
-				sel_start -= length;
-				sel_end -= length;
-			}  /* end if */
-			else if (index+length < sel_end) {
-				sel_start = index;
-				sel_end -= length;
-			}  /* end if */
-			else
-				sel_start = sel_end = 0;
-		}  /* end if */
-		else {
-			if (index + length >= sel_end)
-				sel_end = index;
-			else
-				sel_end -= length;
-		}  /* end else */
-	}  /* end if */
-
-}  /* end del_string */
-
-
-void dup_string(long dest, long source, long length)  /* copy text at source to dest */
-{
-	register  char *copyfrom, *copyto;
-	register  struct mem_control *block;
-	register  long count, nextcount;
-	struct    mem_control *dblock, *newblock, *iblock;
-	long newsize;
-
-	if (source + length > doc_len()) return;
-
-	/* find the block containing dest */
-	block = first_block;
-	count = 0;
-	nextcount = block->size;
-	while (nextcount <= dest) {
-		if ((block=block->next) == (struct mem_control*)-1)
-			return;
-		count = nextcount;
-		nextcount += block->size;
-	}  /* end while */
-
-	/* split document block containing dest */
-	if (count == dest)
-		iblock = block;
-	else {
-		if ((iblock=add_block(block)) == (struct mem_control*)-1)
-			return;
-		copyfrom = block->mem + dest - count;
-		copyto = iblock->mem;
-		while (copyfrom < block->mem + block->size)
-			*(copyto++) = *(copyfrom++);
-		block->size = dest - count;
-		iblock->size = nextcount - dest;
-	}  /* end else */
-
-	/* build chain of blocks for the duplicate text */
-	dblock = (struct mem_control*)-1;
-	for (newsize = 0; newsize < length; newsize += BLOCK_SIZE) {
-		newblock = (struct mem_control*)Malloc(sizeof(struct mem_control));
-		if (newblock == 0)
-			break;
-		newblock->next = dblock;
-		newblock->size = 0;
-		if (dblock != (struct mem_control*)-1)
-			dblock->prev = newblock;
-		dblock = newblock;
-	}  /* end for */
-	
-	if (newsize < length) {
-		/* not enough mem */	
-		while (dblock != (struct mem_control*)-1) {
-			/* free what we already have, then bail out */
-			newblock = dblock->next;
-			Mfree(dblock);
-			dblock = newblock;
-		}  /* end while */
-		form_alert(1,"[3][Out of memory.][OK]");
-		return;
-	}  /* end if */
-	
-	/* find the block containing source */
-	block = first_block;
-	count = 0;
-	nextcount = block->size;
-	while (nextcount <= source) {
-		if ((block=block->next) == (struct mem_control*)-1)
-			return;
-		count = nextcount;
-		nextcount += block->size;
-	}  /* end while */
-
-	/* copy the text to the duplicate chain */
-	copyfrom = block->mem + source - count;
-	copyto = newblock->mem;
-	for (count = length; count-- > 0; *(copyto++) = *(copyfrom++)) {
-		if (copyfrom == block->mem + BLOCK_SIZE) {
-			do {
-				block = block->next;
-				copyfrom = block->mem;
-			} while (block->size == 0);   /* skip empty blocks */
-		}  /* end if */
-		
-		if (copyto == newblock->mem + BLOCK_SIZE) {
-			newblock->size = BLOCK_SIZE;
-			newblock = newblock->next;
-			copyto = newblock->mem;
-		}  /* end if */
-	}  /* end for */
-	newblock->size = copyto - newblock->mem;
-
-	/* insert copied text into document before iblock */
-	if (iblock == first_block)
-		first_block = dblock;
-	else
-		iblock->prev->next = dblock;
-	dblock->prev = iblock->prev;
-	newblock->next = iblock;
-	iblock->prev = newblock;
-
-	/* adjust region selection variables */
-	if (sel_start != sel_end && dest < sel_end) {
-		sel_end += length;
-		if (dest < sel_start)
-			sel_start += length;
-	}  /* end if */
-
-}  /* end dup_string */
-
-
-void compact(void)   /* crunch document storage */
-{
-	register  struct mem_control *dblock;
-	struct mem_control *sblock;
-	register  char   *source, *dest;
-	register  long count;
-
-	dblock = first_block;
-
-	while (dblock->next != (struct mem_control*)-1) {
-		sblock = dblock->next;     
-		if (dblock->size == BLOCK_SIZE)
-			dblock = sblock;
-		else {      /* partially filled block */
-			source = sblock->mem;
-			dest = dblock->mem + dblock->size;
-			
-			if (dblock->size + sblock->size <= BLOCK_SIZE) {
-				/* merge two blocks */
-				for (count = sblock->size;
-					 count-- > 0;
-					 *(dest++) = *(source++));   /* copy text */
-				
-				dblock->size += sblock->size;
-				rem_block(dblock->next);
-			}  /* end if */
-			else {
-				/* doesn't all fit */
-				for (count = BLOCK_SIZE - dblock->size;
-					 count-- > 0;
-					 *(dest++) = *(source++));   /* copy text */
-				
-				/* adjust sizes */
-				sblock->size -= BLOCK_SIZE - dblock->size;
-				dblock->size = BLOCK_SIZE;
-				
-				dest = sblock->mem;
-				for (count = sblock->size;
-					 count-- > 0;
-					 *(dest++) = *(source++));   /* shuffle dest */
-				
-				dblock = sblock;
-			}  /* end else */
-		}  /* end else */
-	}  /* end while */
-}  /* end compact */
-
-
-long srch_back(char chr, long start)  /* reverse search for char */
-{
-	register  long count, nextcount;
-	register  struct mem_control *block;
-	register  char *pnt;
-
-	if (start < 0) return(-1);
-
-	/* find the block containing start */
-	block = first_block;
-	count = 0;
-	nextcount=block->size;
-	while (nextcount <= start) {
-		if ((block=block->next) == (struct mem_control*)-1)
-			return(-1);
-		count = nextcount;
-		nextcount += block->size;
-	}  /* end while */
-
-	/* reverse search for char */
-	for (pnt = block->mem + start - count; *pnt != chr; pnt--) {
-		if (pnt == block->mem) {
-			do {
-				if ((block=block->prev) == (struct mem_control*)-1)
-					return(-1);
-				pnt = block->mem + block->size;
-				nextcount = count;
-				count -= block->size;
-			} while (block->size == 0);   /* skip empty blocks */
-		}  /* end if */
-	}  /* end for */
-	
-	return(count + (pnt - block->mem));
-
-}  /* end srch_back */
-
-
-long srch_for(char chr, long start)  /* forward search for char */
-{
-	register  long count, nextcount;
-	register  struct mem_control *block;
-	register  char *pnt;
-
-	if (start < 0)
-		return(-1);
-
-	/* find the block containing start */
-	block = first_block;
-	count = 0;
-	nextcount=block->size;
-	while (nextcount <= start) {
-		if ((block=block->next) == (struct mem_control*)-1)
-			return(-1);
-		count = nextcount;
-		nextcount += block->size;
-	}  /* end while */
-
-	/* forward search for char */
-	for (pnt = block->mem + start - count; *pnt != chr;) {
-		if (++pnt == block->mem + nextcount - count) {
-			do {
-				if ((block=block->next) == (struct mem_control*)-1)
-					return(-1);
-				pnt = block->mem;
-				count = nextcount;
-				nextcount += block->size;
-			} while (block->size == 0);   /* skip empty blocks */
-		}  /* end if */
-	}  /* end for */
-	
-	return( count + (pnt - block->mem));
-
-}  /* end srch_back */
-
-
-void close_store(void)  /* release all storage space */
-{
-	register  struct mem_control *block, *nextblock;
-
-	block = first_block;
-	while (block != (struct mem_control*)-1) {
-		nextblock=block->next;
-		Mfree(block);
-		block=nextblock;
-	} /* end while */
-
-}  /* end close_store */
 
 /*.............................GEM STUFF................................*/
 

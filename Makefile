@@ -1,9 +1,15 @@
 DEBUG=yes
-CC=m68k-atari-mint-gcc
-CFLAGS=-fomit-frame-pointer -Os
-LDFLAGS=-lgem
+LIBCMINI=/home/vincent/Atari/Crossdev/libcmini
+TOOLCHAIN=m68k-atari-mint-
+CC=$(TOOLCHAIN)gcc
+AS=$(TOOLCHAIN)as
+STRIP=$(TOOLCHAIN)strip
+CFLAGS=-I$(LIBCMINI)/include -DLIBCMINI -fomit-frame-pointer -Os
+LDFLAGS=-L$(LIBCMINI)/build -lcmini -lgcc -lgem
+
 EXEC=notepad.acc
-SRC=$(wildcard *.c)
+
+SRC=$(wildcard *.c *.s)
 OBJ=$(SRC:.c=.o)
 
 # all: $(EXEC)
@@ -13,13 +19,16 @@ OBJ=$(SRC:.c=.o)
 #     @echo "Génération en mode release"
 # endif
 
-notepad.acc: $(OBJ)
-	@$(CC) -o $@ $^ $(LDFLAGS)
-
-#notepad.c: hello.h
+$(EXEC): $(OBJ)
+	$(CC) -o $@ -nostdlib $(LIBCMINI)/build/crt0.o $^ -s $(LDFLAGS)   
+	$(STRIP) $@
 
 %.o: %.c
-	@$(CC) -o $@ -c $< $(CFLAGS)
+	$(CC) -o $@ -c $< $(CFLAGS)
+
+%.o: %.s
+	$(CC) -o $@ -c $< $(CFLAGS)
+
 
 .PHONY: clean mrproper
 
